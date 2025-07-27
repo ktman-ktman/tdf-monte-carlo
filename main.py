@@ -1,6 +1,7 @@
 import numpy as np
 import click
 import pandas as pd
+import os
 
 
 def monte_carlo_tdf(
@@ -47,7 +48,9 @@ def monte_carlo_tdf(
 @click.option('--initial-investment', type=float, default=None, show_default=True, help='開始時点の積立金の月額（デフォルトは最初の年の積立金額/12）')
 @click.option('--n-simulations', type=int, default=10000, show_default=True, help='シミュレーション回数')
 @click.option('--seed', type=int, default=42, show_default=True, help='乱数シード')
-def main(csv, start_age, end_age, expected_returns, risks, contributions, initial_investment, n_simulations, seed):
+@click.option('--output-csv', type=click.Path(), help='詳細な月次シミュレーション結果をCSV出力するファイルパス')
+@click.option('--output-annual-csv', type=click.Path(), help='年次ごとの富（積立前・積立後）をCSV出力するファイルパス')
+def main(csv, start_age, end_age, expected_returns, risks, contributions, initial_investment, n_simulations, seed, output_csv, output_annual_csv):
     """
     ターゲットデートファンドのモンテカルロシミュレーション（月次・年毎の積立対応）
     """
@@ -72,7 +75,7 @@ def main(csv, start_age, end_age, expected_returns, risks, contributions, initia
             raise ValueError(f"期待リターン・リスク・積立金額の数は年数（{n_years}）と一致させてください")
     if initial_investment is None:
         initial_investment = contributions[0] / 12
-    results = monte_carlo_tdf_monthly(
+    results, details_df, annual_df = monte_carlo_tdf_monthly(
         start_age=start_age,
         end_age=end_age,
         expected_returns=expected_returns,
@@ -81,7 +84,14 @@ def main(csv, start_age, end_age, expected_returns, risks, contributions, initia
         initial_investment=initial_investment,
         n_simulations=n_simulations,
         seed=seed,
+        return_details=True
     )
+    if output_csv:
+        details_df.to_csv(output_csv, index=False)
+        print(f"詳細な月次シミュレーション結果を {os.path.abspath(output_csv)} に出力しました")
+    if output_annual_csv:
+        annual_df.to_csv(output_annual_csv, index=False)
+        print(f"年次ごとの富（積立前・積立後）を {os.path.abspath(output_annual_csv)} に出力しました")
     # 結果のサマリーを表示
     final_assets = results[:, -1]
     print(f"\n{n_simulations}回シミュレーションの最終資産サマリー:")
@@ -101,6 +111,7 @@ def monte_carlo_tdf_monthly(
     initial_investment: float,
     n_simulations: int = 10000,
     seed: int = 42,
+    return_details: bool = False,
 ):
     """
     月次でターゲットデートファンドのモンテカルロシミュレーション
@@ -120,19 +131,58 @@ def monte_carlo_tdf_monthly(
     assert len(monthly_contributions) == n_months
     results = np.zeros((n_simulations, n_months + 1))
     results[:, 0] = initial_investment
+    # 詳細記録用
+    details = {
+        'sim': [], 'month': [], 'age': [], 'age_month': [],
+        'expected_return': [], 'risk': [], 'contribution': [],
+        'randn': [], 'simulated_return': [], 'wealth': []
+    }
+    # 年次記録用
+    annual = {
+        'sim': [], 'age': [],
+        'wealth_before_contribution': [],
+        'wealth_after_contribution': []
+    }
     for i in range(n_months):
         mu_annual = monthly_returns[i]
         sigma_annual = monthly_risks[i]
         # 年次リターン・リスクを月次に変換
         mu_monthly = np.log(1 + mu_annual) / 12
         sigma_monthly = sigma_annual / np.sqrt(12)
-        monthly_log_return = np.random.normal(
-            loc=mu_monthly, scale=sigma_monthly, size=n_simulations
-        )
+        randn = np.random.normal(loc=0, scale=1, size=n_simulations)
+        monthly_log_return = mu_monthly + sigma_monthly * randn
         monthly_return = np.exp(monthly_log_return) - 1
+        # 年初の富（積立前）
+        if i % 12 == 0:
+            for sim in range(n_simulations):
+                annual['sim'].append(sim)
+                age = start_age + i // 12
+                annual['age'].append(age)
+                annual['wealth_before_contribution'].append(results[sim, i])
+                annual['wealth_after_contribution'].append(results[sim, i] + monthly_contributions[i])
         # 積立金額を加算してからリターンを適用
         results[:, i + 1] = (results[:, i] + monthly_contributions[i]) * (1 + monthly_return)
-    return results
+        if return_details:
+            for sim in range(n_simulations):
+                details['sim'].append(sim)
+                details['month'].append(i+1)
+                age = start_age + i // 12
+                age_month = (i % 12) + 1
+                details['age'].append(age)
+                details['age_month'].append(age_month)
+                details['expected_return'].append(mu_annual)
+                details['risk'].append(sigma_annual)
+                details['contribution'].append(monthly_contributions[i])
+                details['randn'].append(randn[sim])
+                details['simulated_return'].append(monthly_return[sim])
+                details['wealth'].append(results[sim, i + 1])
+    if return_details:
+        import pandas as pd
+        details_df = pd.DataFrame(details)
+        annual_df = pd.DataFrame(annual)
+        return results, details_df, annual_df
+    else:
+        return results
 
 
 if __name__ == "__main__":
