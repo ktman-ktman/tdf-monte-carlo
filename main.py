@@ -1,5 +1,6 @@
 import numpy as np
 import click
+import pandas as pd
 
 
 def monte_carlo_tdf(
@@ -37,24 +38,38 @@ def monte_carlo_tdf(
 
 
 @click.command()
-@click.option('--start-age', type=int, required=True, help='開始年齢')
-@click.option('--end-age', type=int, required=True, help='終了年齢')
-@click.option('--expected-returns', type=float, required=True, multiple=True, help='各年齢ごとの期待リターン（複数指定可）')
-@click.option('--risks', type=float, required=True, multiple=True, help='各年齢ごとのリスク（標準偏差, 複数指定可）')
-@click.option('--contributions', type=float, required=True, multiple=True, help='各年齢ごとの年間積立金額（複数指定可）')
+@click.option('--csv', type=click.Path(exists=True), help='年齢ごとのリターン・リスク・積立金額のCSVファイル（age,expected_return,risk,contribution列）')
+@click.option('--start-age', type=int, help='開始年齢（CSV未指定時は必須）')
+@click.option('--end-age', type=int, help='終了年齢（CSV未指定時は必須）')
+@click.option('--expected-returns', type=float, multiple=True, help='各年齢ごとの期待リターン（複数指定可、CSV未指定時のみ）')
+@click.option('--risks', type=float, multiple=True, help='各年齢ごとのリスク（標準偏差, 複数指定可、CSV未指定時のみ）')
+@click.option('--contributions', type=float, multiple=True, help='各年齢ごとの年間積立金額（複数指定可、CSV未指定時のみ）')
 @click.option('--initial-investment', type=float, default=None, show_default=True, help='開始時点の積立金の月額（デフォルトは最初の年の積立金額/12）')
 @click.option('--n-simulations', type=int, default=10000, show_default=True, help='シミュレーション回数')
 @click.option('--seed', type=int, default=42, show_default=True, help='乱数シード')
-def main(start_age, end_age, expected_returns, risks, contributions, initial_investment, n_simulations, seed):
+def main(csv, start_age, end_age, expected_returns, risks, contributions, initial_investment, n_simulations, seed):
     """
     ターゲットデートファンドのモンテカルロシミュレーション（月次・年毎の積立対応）
     """
-    expected_returns = list(expected_returns)
-    risks = list(risks)
-    contributions = list(contributions)
-    n_years = end_age - start_age + 1
-    if len(expected_returns) != n_years or len(risks) != n_years or len(contributions) != n_years:
-        raise ValueError(f"期待リターン・リスク・積立金額の数は年数（{n_years}）と一致させてください")
+    if csv:
+        df = pd.read_csv(csv)
+        if not set(['age', 'expected_return', 'risk', 'contribution']).issubset(df.columns):
+            raise ValueError('CSVにはage,expected_return,risk,contribution列が必要です')
+        df = df.sort_values('age')
+        start_age = int(df['age'].iloc[0])
+        end_age = int(df['age'].iloc[-1])
+        expected_returns = df['expected_return'].tolist()
+        risks = df['risk'].tolist()
+        contributions = df['contribution'].tolist()
+    else:
+        if start_age is None or end_age is None:
+            raise ValueError('CSV未指定時は--start-age, --end-ageが必要です')
+        expected_returns = list(expected_returns)
+        risks = list(risks)
+        contributions = list(contributions)
+        n_years = end_age - start_age + 1
+        if len(expected_returns) != n_years or len(risks) != n_years or len(contributions) != n_years:
+            raise ValueError(f"期待リターン・リスク・積立金額の数は年数（{n_years}）と一致させてください")
     if initial_investment is None:
         initial_investment = contributions[0] / 12
     results = monte_carlo_tdf_monthly(
